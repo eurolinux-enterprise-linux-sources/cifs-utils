@@ -1,0 +1,177 @@
+From 9c7236401e52fefbdb18afc2c2eb9d2089465110 Mon Sep 17 00:00:00 2001
+From: Jeff Layton <jlayton@samba.org>
+Date: Tue, 17 Apr 2012 07:29:07 -0400
+Subject: [PATCH] mount.cifs: don't allow unprivileged users to mount onto dirs to which they
+ can't chdir
+
+If mount.cifs is installed as a setuid root program, then a user can
+use it to gather information about files and directories to which he
+does not have access.
+
+One of the first things that mount.cifs does is to chdir() into the
+mountpoint and then proceeds to perform the mount onto ".". A malicious
+user could exploit this fact to determine information about directories
+to which he does not have access. Specifically, whether the dentry in
+question is a file or directory and whether it exists at all.
+
+This patch fixes this by making the program switch the fsuid to the
+real uid for unprivileged users when mounting.
+
+Note that this is a behavior change. mount.cifs has in the past allowed
+users to mount onto any directory as long as it's listed in /etc/fstab
+as a user mount. With this change, the user must also be able to chdir
+into the mountpoint without needing special privileges. Hopefully not
+many people have such a pathological configuration.
+
+This patch should fix CVE-2012-1586.
+
+Reported-by: Jesus Olmos <jesus.olmos@blueliv.com>
+Signed-off-by: Jeff Layton <jlayton@samba.org>
+---
+ configure.ac |    4 +++
+ mount.cifs.8 |    3 +-
+ mount.cifs.c |   85 +++++++++++++++++++++++++++++++++++++++++++++-------------
+ 3 files changed, 72 insertions(+), 20 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index e0733f9..af277ae 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -30,6 +30,10 @@ AC_GNU_SOURCE
+ # Checks for header files.
+ AC_CHECK_HEADERS([arpa/inet.h ctype.h fcntl.h inttypes.h limits.h mntent.h netdb.h stddef.h stdint.h stdlib.h string.h strings.h sys/mount.h sys/param.h sys/socket.h sys/time.h syslog.h unistd.h], , [AC_MSG_ERROR([necessary header(s) not found])])
+ 
++# do we have sys/fsuid.h and setfsuid()?
++AC_CHECK_HEADERS([sys/fsuid.h])
++AC_CHECK_FUNC(setfsuid, , [AC_MSG_ERROR([System does not support setfsuid()])])
++
+ if test $enable_cifsupcall != "no"; then
+ 	AC_CHECK_HEADERS([krb5.h krb5/krb5.h])
+ 	if test x$ac_cv_header_krb5_krb5_h != xyes ; then
+diff --git a/mount.cifs.8 b/mount.cifs.8
+index b109e20..e024d1c 100644
+--- a/mount.cifs.8
++++ b/mount.cifs.8
+@@ -625,7 +625,8 @@ The variable
+ may contain the pathname of a file to read the password from\&. A single line of input is read and used as the password\&.
+ .SH "NOTES"
+ .PP
+-This command may be used only by root, unless installed setuid, in which case the noeexec and nosuid mount flags are enabled\&. When installed as a setuid program, the program follows the conventions set forth by the mount program for user mounts\&.
++This command may be used only by root, unless installed setuid, in which case the noeexec and nosuid mount flags are enabled\&. When installed as a setuid program, the program follows the conventions set forth by the mount program for user mounts, with the added restriction that users must be able to chdir() into the
++mountpoint prior to the mount in order to be able to mount onto it.
+ .PP
+ Some samba client tools like smbclient(8) honour client\-side configuration parameters present in smb\&.conf\&. Unlike those client tools,
+ \fImount\&.cifs\fR
+diff --git a/mount.cifs.c b/mount.cifs.c
+index c6f31c3..0f112c1 100644
+--- a/mount.cifs.c
++++ b/mount.cifs.c
+@@ -45,6 +45,9 @@
+ #include <libgen.h>
+ #include <sys/mman.h>
+ #include <sys/wait.h>
++#ifdef HAVE_SYS_FSUID_H
++#include <sys/fsuid.h>
++#endif /* HAVE_SYS_FSUID_H */
+ #ifdef HAVE_LIBCAP_NG
+ #include <cap-ng.h>
+ #else /* HAVE_LIBCAP_NG */
+@@ -1864,6 +1867,68 @@ assemble_exit:
+ 	return rc;
+ }
+ 
++/*
++ * chdir() into the mountpoint and determine "realpath". We assume here that
++ * "mountpoint" is a statically allocated string and does not need to be freed.
++ */
++static int
++acquire_mountpoint(char **mountpointp)
++{
++	int rc, dacrc;
++	uid_t realuid, oldfsuid;
++	gid_t oldfsgid;
++	char *mountpoint;
++
++	/*
++	 * Acquire the necessary privileges to chdir to the mountpoint. If
++	 * the real uid is root, then we reacquire CAP_DAC_READ_SEARCH. If
++	 * it's not, then we change the fsuid to the real uid to ensure that
++	 * the mounting user actually has access to the mountpoint.
++	 *
++	 * The mount(8) manpage does not state that users must be able to
++	 * chdir into the mountpoint in order to mount onto it, but if we
++	 * allow that, then an unprivileged user could use this program to
++	 * "probe" into directories to which he does not have access.
++	 */
++	realuid = getuid();
++	if (realuid == 0) {
++		dacrc = toggle_dac_capability(0, 1);
++		if (dacrc)
++			return dacrc;
++	} else {
++		oldfsuid = setfsuid(realuid);
++		oldfsgid = setfsgid(getgid());
++	}
++
++	rc = chdir(*mountpointp);
++	if (rc) {
++		fprintf(stderr, "Couldn't chdir to %s: %s\n", *mountpointp,
++			strerror(errno));
++		rc = EX_USAGE;
++		goto restore_privs;
++	}
++
++	mountpoint = realpath(".", NULL);
++	if (!mountpoint) {
++		fprintf(stderr, "Unable to resolve %s to canonical path: %s\n",
++			*mountpointp, strerror(errno));
++		rc = EX_SYSERR;
++	}
++
++	*mountpointp = mountpoint;
++restore_privs:
++	if (realuid == 0) {
++		dacrc = toggle_dac_capability(0, 0);
++		if (dacrc)
++			rc = rc ? rc : dacrc;
++	} else {
++		setfsuid(oldfsuid);
++		setfsgid(oldfsgid);
++	}
++
++	return rc;
++}
++
+ int main(int argc, char **argv)
+ {
+ 	int c;
+@@ -1960,25 +2025,7 @@ int main(int argc, char **argv)
+ 	mountpoint = argv[optind + 1];
+ 
+ 	/* chdir into mountpoint as soon as possible */
+-	rc = toggle_dac_capability(0, 1);
+-	if (rc)
+-		return rc;
+-	rc = chdir(mountpoint);
+-	if (rc) {
+-		fprintf(stderr, "Couldn't chdir to %s: %s\n", mountpoint,
+-			strerror(errno));
+-		rc = EX_USAGE;
+-		goto mount_exit;
+-	}
+-
+-	mountpoint = realpath(".", NULL);
+-	if (!mountpoint) {
+-		fprintf(stderr, "Unable to resolve %s to canonical path: %s\n",
+-			mountpoint, strerror(errno));
+-		rc = EX_SYSERR;
+-		goto mount_exit;
+-	}
+-	rc = toggle_dac_capability(0, 0);
++	rc = acquire_mountpoint(&mountpoint);
+ 	if (rc)
+ 		return rc;
+ 
+-- 
+1.7.1
+

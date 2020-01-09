@@ -1,0 +1,175 @@
+diff --git a/mount.cifs.c b/mount.cifs.c
+index b97f672..ab875ea 100644
+--- a/mount.cifs.c
++++ b/mount.cifs.c
+@@ -42,6 +42,7 @@
+ #include <fcntl.h>
+ #include <limits.h>
+ #include <paths.h>
++#include <libgen.h>
+ #include <sys/mman.h>
+ #include <sys/wait.h>
+ #ifdef HAVE_LIBCAP_NG
+@@ -159,6 +160,7 @@
+ #define OPT_NOMAND     28
+ #define OPT_CRUID      29
+ 
++#define MNT_TMP_FILE "/.mtab.cifs.XXXXXX"
+ 
+ /* struct for holding parsed mount info for use by privleged process */
+ struct parsed_mount_info {
+@@ -1548,6 +1550,98 @@ add_mtab_exit:
+ 	return rc;
+ }
+ 
++static int
++del_mtab(char *mountpoint)
++{
++	int tmprc, rc = 0;
++	FILE *mnttmp, *mntmtab;
++	struct mntent *mountent;
++	char *mtabfile, *mtabdir, *mtabtmpfile;
++
++	mtabfile = strdup(MOUNTED);
++	mtabdir = dirname(mtabfile);
++	mtabdir = realloc(mtabdir, strlen(mtabdir) + strlen(MNT_TMP_FILE) + 2);
++	if (!mtabdir) {
++		fprintf(stderr, "del_mtab: cannot determine current mtab path");
++		rc = EX_FILEIO;
++		goto del_mtab_exit;
++	}
++
++	mtabtmpfile = strcat(mtabdir, MNT_TMP_FILE);
++	if (!mtabtmpfile) {
++		fprintf(stderr, "del_mtab: cannot allocate memory to tmp file");
++		rc = EX_FILEIO;
++		goto del_mtab_exit;
++	}
++
++	atexit(unlock_mtab);
++	rc = lock_mtab();
++	if (rc) {
++		fprintf(stderr, "del_mtab: cannot lock mtab");
++		rc = EX_FILEIO;
++		goto del_mtab_exit;
++	}
++
++	mtabtmpfile = mktemp(mtabtmpfile);
++	if (!mtabtmpfile) {
++		fprintf(stderr, "del_mtab: cannot setup tmp file destination");
++		rc = EX_FILEIO;
++		goto del_mtab_exit;
++	}
++
++	mntmtab = setmntent(MOUNTED, "r");
++	if (!mntmtab) {
++		fprintf(stderr, "del_mtab: could not update mount table\n");
++		rc = EX_FILEIO;
++		goto del_mtab_exit;
++	}
++
++	mnttmp = setmntent(mtabtmpfile, "w");
++	if (!mnttmp) {
++		fprintf(stderr, "del_mtab: could not update mount table\n");
++		endmntent(mntmtab);
++		rc = EX_FILEIO;
++		goto del_mtab_exit;
++	}
++
++	while ((mountent = getmntent(mntmtab)) != NULL) {
++		if (!strcmp(mountent->mnt_dir, mountpoint))
++			continue;
++		rc = addmntent(mnttmp, mountent);
++		if (rc) {
++			fprintf(stderr, "del_mtab: unable to add mount entry to mtab\n");
++			rc = EX_FILEIO;
++			goto del_mtab_error;
++		}
++	}
++
++	endmntent(mntmtab);
++
++	tmprc = my_endmntent(mnttmp, 0);
++	if (tmprc) {
++		fprintf(stderr, "del_mtab: error %d detected on close of tmp file\n", tmprc);
++		rc = EX_FILEIO;
++		goto del_mtab_error;
++	}
++
++	if (rename(mtabtmpfile, MOUNTED)) {
++		fprintf(stderr, "del_mtab: error %d when renaming mtab in place\n", errno);
++		rc = EX_FILEIO;
++		goto del_mtab_error;
++	}
++
++del_mtab_exit:
++	unlock_mtab();
++	free(mtabdir);
++	return rc;
++
++del_mtab_error:
++	if (unlink(mtabtmpfile))
++		fprintf(stderr, "del_mtab: failed to delete tmp file - %s\n",
++				strerror(errno));
++	goto del_mtab_exit;
++}
++
+ /* have the child drop root privileges */
+ static int
+ drop_child_privs(void)
+@@ -1965,8 +2059,15 @@ mount_retry:
+ 	}
+ 
+ do_mtab:
+-	if (!parsed_info->nomtab)
++	if (!parsed_info->nomtab && !mtab_unusable()) {
++		if (parsed_info->flags & MS_REMOUNT) {
++			rc = del_mtab(mountpoint);
++			if (rc)
++				goto mount_exit;
++		}
++
+ 		rc = add_mtab(orig_dev, mountpoint, parsed_info->flags, fstype);
++	}
+ 
+ mount_exit:
+ 	if (parsed_info) {
+diff --git a/mount.h b/mount.h
+index 6f59781..80bdbe7 100644
+--- a/mount.h
++++ b/mount.h
+@@ -32,6 +32,7 @@
+ #define _PATH_MOUNTED_LOCK	_PATH_MOUNTED "~"
+ #define _PATH_MOUNTED_TMP	_PATH_MOUNTED ".tmp"
+ 
++extern int mtab_unusable(void);
+ extern int lock_mtab(void);
+ extern void unlock_mtab(void);
+ extern int my_endmntent(FILE *stream, off_t size);
+diff --git a/mtab.c b/mtab.c
+index 6aa0850..de545b7 100644
+--- a/mtab.c
++++ b/mtab.c
+@@ -77,6 +77,22 @@ mono_time(void) {
+ 	return ret;
+ }
+ 
++/*
++ * See if mtab is present and whether it's a symlink. Returns errno from stat()
++ * call or EMLINK if it's a symlink.
++ */
++int
++mtab_unusable(void)
++{
++	struct stat mstat;
++
++	if(lstat(_PATH_MOUNTED, &mstat))
++		return errno;
++	else if (S_ISLNK(mstat.st_mode))
++		return EMLINK;
++	return 0;
++}
++
+ /* Remove lock file.  */
+ void
+ unlock_mtab (void) {

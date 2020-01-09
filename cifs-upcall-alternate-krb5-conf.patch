@@ -1,0 +1,69 @@
+diff --git a/cifs.upcall.8.in b/cifs.upcall.8.in
+index bef1ee6..5de3ebb 100644
+--- a/cifs.upcall.8.in
++++ b/cifs.upcall.8.in
+@@ -22,7 +22,7 @@
+ cifs.upcall \- Userspace upcall helper for Common Internet File System (CIFS)
+ .SH "SYNOPSIS"
+ .HP \w'\ 'u
+-cifs\&.upcall [\-\-trust\-dns|\-t] [\-\-version|\-v] [\-\-legacy\-uid|\-l] {keyid}
++cifs\&.upcall [\-\-trust\-dns|\-t] [\-\-version|\-v] [\-\-legacy\-uid|\-l] [--krb5conf=/path/to/krb5.conf|-k /path/to/...] {keyid}
+ .SH "DESCRIPTION"
+ .PP
+ This tool is part of the cifs-utils suite\&.
+@@ -38,6 +38,12 @@ for a particular key type\&. While it can be run directly from the command\-line
+ This option is deprecated and is currently ignored\&.
+ .RE
+ .PP
++\--krb5conf=/path/to/krb5.conf|-k /path/to/krb5.conf
++.RS 4
++This option allows administrators to set an alternate location for the
++krb5.conf file that cifs.upcall will use.
++.RE
++.PP
+ \-\-trust\-dns|\-t
+ .RS 4
+ With krb5 upcalls, the name used as the host portion of the service principal defaults to the hostname portion of the UNC\&. This option allows the upcall program to reverse resolve the network address of the server in order to get the hostname\&.
+diff --git a/cifs.upcall.c b/cifs.upcall.c
+index 04d8898..03460f9 100644
+--- a/cifs.upcall.c
++++ b/cifs.upcall.c
+@@ -759,13 +759,13 @@ lowercase_string(char *c)
+ 
+ static void usage(void)
+ {
+-	syslog(LOG_INFO, "Usage: %s [-t] [-v] [-l] key_serial", prog);
+-	fprintf(stderr, "Usage: %s [-t] [-v] [-l] key_serial\n", prog);
++	fprintf(stderr, "Usage: %s [-k /path/to/krb5.conf] [-t] [-v] [-l] key_serial\n", prog);
+ }
+ 
+ const struct option long_options[] = {
+-	{"trust-dns", 0, NULL, 't'},
++	{"krb5conf", 1, NULL, 'k'},
+ 	{"legacy-uid", 0, NULL, 'l'},
++	{"trust-dns", 0, NULL, 't'},
+ 	{"version", 0, NULL, 'v'},
+ 	{NULL, 0, NULL, 0}
+ };
+@@ -793,7 +793,7 @@ int main(const int argc, char *const argv[])
+ 
+ 	openlog(prog, 0, LOG_DAEMON);
+ 
+-	while ((c = getopt_long(argc, argv, "cltv", long_options, NULL)) != -1) {
++	while ((c = getopt_long(argc, argv, "ck:ltv", long_options, NULL)) != -1) {
+ 		switch (c) {
+ 		case 'c':
+ 			/* legacy option -- skip it */
+@@ -801,6 +801,12 @@ int main(const int argc, char *const argv[])
+ 		case 't':
+ 			try_dns++;
+ 			break;
++		case 'k':
++			if (setenv("KRB5_CONFIG", optarg, 1) != 0) {
++				syslog(LOG_ERR, "unable to set $KRB5_CONFIG: %d", errno);
++				goto out;
++			}
++			break;
+ 		case 'l':
+ 			legacy_uid++;
+ 			break;

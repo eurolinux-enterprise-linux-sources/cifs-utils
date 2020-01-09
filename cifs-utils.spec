@@ -1,9 +1,9 @@
-#%define pre_release rc1
+#% define pre_release rc1
 %define pre_release %nil
 
 Name:           cifs-utils
 Version:        4.8.1
-Release:        5%{pre_release}%{?dist}
+Release:        10%{pre_release}%{?dist}
 Summary:        Utilities for mounting and managing CIFS mounts
 
 Group:          System Environment/Daemons
@@ -18,6 +18,14 @@ Patch1:         mount.cifs-reacquire-CAP_DAC_READ_SEARCH-before-call.patch
 Patch2:         manpage-add-sections-for-missing-mount-options.patch
 Patch3:         mount.cifs-handle-ENOSPC-EFBIG-condition-properly-when-alt.patch
 Patch4:         mount.cifs-check_newline-returns-EX_USAGE-on-error-n.patch
+Patch5:         manpage-add-more-missing-entries-and-fix-wsize.patch
+Patch6:         cifs-upcall-improve-selection-of-SPNs.patch
+Patch7:         cifs-upcall-alternate-krb5-conf.patch
+Patch8:         mount.cifs-no-duplicate-mtab-entry-on-remount.patch
+Patch9:         mount.cifs-add-backupuidgid-options.patch
+Patch10:        mount.cifs-fix-strtoul-result-tests.patch
+Patch11:        cifs.upcall-use-krb5_sname_to_principal.patch
+Patch12:        mount.cifs-dont-allow-unpriv-users-to-mount-on-dirs-they-cant-chdir.patch
 
 BuildRequires:  libcap-ng-devel libtalloc-devel krb5-devel keyutils-libs-devel autoconf automake
 Requires:       keyutils
@@ -37,6 +45,14 @@ file system.
 %patch2 -p1
 %patch3 -p1
 %patch4 -p1
+%patch5 -p1
+%patch6 -p1
+%patch7 -p1
+%patch8 -p1
+%patch9 -p1
+%patch10 -p1
+%patch11 -p1
+%patch12 -p1
 
 %build
 %configure --prefix=/usr
@@ -58,6 +74,24 @@ rm -rf %{buildroot}
 %{_mandir}/man8/mount.cifs.8.gz
 
 %changelog
+* Tue Apr 17 2012 Jeff Layton <jlayton@redhat.com> 4.8.1-10
+- mount.cifs: don't allow unprivileged users to mount onto dirs they can't chdir into (bz 812782)
+
+* Thu Mar 29 2012 Jeff Layton <jlayton@redhat.com> 4.8.1-9
+- cifs.upcall: use krb5_sname_to_principal to construct principal name (bz 805490)
+
+* Mon Mar 26 2012 Jeff Layton <jlayton@redhat.com> 4.8.1-8
+- mount.cifs: add backupuid=/backupgid= mount options (bz 806337)
+
+* Fri Mar 02 2012 Jeff Layton <jlayton@redhat.com> 4.8.1-7
+- RFE: Improve selection of SPNs with cifs.upcall (bz 748757)
+- mount.cifs does not use KRB5_CONFIG (bz 748756)
+- mount -o remount <cifs> creates additional entries in /etc/mtab (bz 770004)
+- mount.cifs does not honor the uid/gid=username option, only the uid/gid=# option (bz 796463)
+
+* Mon Feb 20 2012 Jeff Layton <jlayton@redhat.com> 4.8.1-6
+- undocumented mount.cifs options (bz 769923)
+
 * Fri Jul 29 2011 Jeff Layton <jlayton@redhat.com> 4.8.1-5
 - fix handling of check_newline return code in mount.cifs (bz 725509)
 
