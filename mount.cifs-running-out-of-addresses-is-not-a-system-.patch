@@ -1,0 +1,32 @@
+From 82f93c44343f281ce61f547ff8f9e5f79945cb20 Mon Sep 17 00:00:00 2001
+From: Jeff Layton <jlayton@samba.org>
+Date: Wed, 12 Sep 2012 07:49:44 -0400
+Subject: [PATCH] mount.cifs: running out of addresses is not a system error
+
+This patch fixes a minor regression. It used to be that when the mount
+helper would run out of addresses that it would return EX_FAIL to
+userspace. It now returns EX_SYSERR which is incorrect. Reinstate
+the correct error code.
+
+Reported-by: Ales Zelinka <azelinka@redhat.com>
+Signed-off-by: Jeff Layton <jlayton@samba.org>
+---
+ mount.cifs.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/mount.cifs.c b/mount.cifs.c
+index 3fd472a..7ee859b 100644
+--- a/mount.cifs.c
++++ b/mount.cifs.c
+@@ -2119,7 +2119,7 @@ int main(int argc, char **argv)
+ mount_retry:
+ 	if (!currentaddress) {
+ 		fprintf(stderr, "Unable to find suitable address.\n");
+-		rc = EX_SYSERR;
++		rc = EX_FAIL;
+ 		goto mount_exit;
+ 	}
+ 	strlcpy(options, "ip=", options_size);
+-- 
+1.7.1
+

@@ -1,0 +1,30 @@
+From 69dc369ec1f8f934ec58adb82d016dc731262dcf Mon Sep 17 00:00:00 2001
+From: Pavel Shilovsky <piastry@etersoft.ru>
+Date: Wed, 29 Aug 2012 10:01:11 -0400
+Subject: [PATCH] mount.cifs: fix the conflict between rwpidforward and rw mount options
+
+Both these options are started with "rw" - that's why the first one
+isn't switched on even if it is specified. Fix this by adding a length
+check for "rw" option check.
+
+Signed-off-by: Pavel Shilovsky <piastry@etersoft.ru>
+---
+ mount.cifs.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/mount.cifs.c b/mount.cifs.c
+index f877909..5ca18ff 100644
+--- a/mount.cifs.c
++++ b/mount.cifs.c
+@@ -848,7 +848,7 @@ static int parse_opt_token(const char *token)
+ 		return OPT_GUEST;
+ 	if (strncmp(token, "ro", 2) == 0)
+ 		return OPT_RO;
+-	if (strncmp(token, "rw", 2) == 0)
++	if (strncmp(token, "rw", 2) == 0 && strlen(token) == 2)
+ 		return OPT_RW;
+ 	if (strncmp(token, "remount", 7) == 0)
+ 		return OPT_REMOUNT;
+-- 
+1.7.1
+

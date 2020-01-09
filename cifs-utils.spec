@@ -3,7 +3,7 @@
 
 Name:           cifs-utils
 Version:        4.8.1
-Release:        10%{pre_release}%{?dist}
+Release:        18%{pre_release}%{?dist}
 Summary:        Utilities for mounting and managing CIFS mounts
 
 Group:          System Environment/Daemons
@@ -26,8 +26,17 @@ Patch9:         mount.cifs-add-backupuidgid-options.patch
 Patch10:        mount.cifs-fix-strtoul-result-tests.patch
 Patch11:        cifs.upcall-use-krb5_sname_to_principal.patch
 Patch12:        mount.cifs-dont-allow-unpriv-users-to-mount-on-dirs-they-cant-chdir.patch
+Patch13:        cifs.idmap-add-cifs.idmap.patch
+Patch14:        acltools-add-get-setcifsacl.patch
+Patch15:        manpage-add-more-mount.cifs-options.patch
+Patch16:        autoconf-add-enable-pie-and-enable-relro.patch
+Patch17:        mount.cifs-special-handling-for-krb5-usernames.patch
+Patch18:        contrib-add-a-set-of-sample-etc-request-key.d-files.patch
+Patch19:        mount.cifs-fix-the-conflict-between-rwpidforward-and.patch
+Patch20:        mount.cifs-running-out-of-addresses-is-not-a-system-.patch
+Patch21:        cifs-utils-acl-and-idmap-fixes.patch
 
-BuildRequires:  libcap-ng-devel libtalloc-devel krb5-devel keyutils-libs-devel autoconf automake
+BuildRequires:  libcap-ng-devel libtalloc-devel krb5-devel keyutils-libs-devel autoconf automake samba-winbind-devel
 Requires:       keyutils
 
 %description
@@ -53,6 +62,15 @@ file system.
 %patch10 -p1
 %patch11 -p1
 %patch12 -p1
+%patch13 -p1
+%patch14 -p1
+%patch15 -p1
+%patch16 -p1
+%patch17 -p1
+%patch18 -p1
+%patch19 -p1
+%patch20 -p1
+%patch21 -p1
 
 %build
 %configure --prefix=/usr
@@ -61,6 +79,9 @@ make %{?_smp_mflags}
 %install
 rm -rf %{buildroot}
 make install DESTDIR=%{buildroot}
+mkdir -p %{buildroot}%{_sysconfdir}/request-key.d
+install -m 644 contrib/request-key.d/cifs.idmap.conf %{buildroot}%{_sysconfdir}/request-key.d
+install -m 644 contrib/request-key.d/cifs.spnego.conf %{buildroot}%{_sysconfdir}/request-key.d
 
 %clean
 rm -rf %{buildroot}
@@ -69,11 +90,50 @@ rm -rf %{buildroot}
 %defattr(-,root,root,-)
 %doc
 /sbin/mount.cifs
+%{_bindir}/getcifsacl
+%{_bindir}/setcifsacl
 %{_sbindir}/cifs.upcall
+%{_sbindir}/cifs.idmap
+%{_mandir}/man1/getcifsacl.1.gz
+%{_mandir}/man1/setcifsacl.1.gz
 %{_mandir}/man8/cifs.upcall.8.gz
+%{_mandir}/man8/cifs.idmap.8.gz
 %{_mandir}/man8/mount.cifs.8.gz
+%config(noreplace) %{_sysconfdir}/request-key.d/cifs.idmap.conf
+%config(noreplace) %{_sysconfdir}/request-key.d/cifs.spnego.conf
 
 %changelog
+* Fri Nov 09 2012 Jeff Layton <jlayton@redhat.com> 4.8.1-18
+- don't cast freely between wbcDomainSid and cifs_sid (bz 843612)
+
+* Wed Nov 07 2012 Jeff Layton <jlayton@redhat.com> 4.8.1-17
+- fix printing of REVISION: and CONTROL: on BE arches (bz 843612)
+
+* Wed Nov 07 2012 Jeff Layton <jlayton@redhat.com> 4.8.1-16
+- fix even more issues in cifs.idmap (bz 843617)
+- fix even more issues in getcifsacl/setcifsacl (bz 843612)
+- fixes for problems in setcifsacl found by coverity (bz 873683)
+
+* Mon Nov 05 2012 Jeff Layton <jlayton@redhat.com> 4.8.1-15
+- fix several issues in cifs.idmap (bz 843617)
+- fix several issues in getcifsacl/setcifsacl (bz 843612)
+
+* Mon Oct 08 2012 Jeff Layton <jlayton@redhat.com> 4.8.1-14
+- fix return code when mount.cifs runs out of addresses to try (bz 856729)
+
+* Wed Aug 29 2012 Jeff Layton <jlayton@redhat.com> 4.8.1-13
+- fix conflict between "rw" and "rwpidforward" mount options (bz 843596)
+
+* Thu Aug 23 2012 Jeff Layton <jlayton@redhat.com> 4.8.1-12
+- add stock request-key config files in /etc/request-key.d (bz 843617)
+
+* Wed Aug 22 2012 Jeff Layton <jlayton@redhat.com> 4.8.1-11
+- add cifs.idmap, binaries and autoconf goop (bz 843617)
+- add getcifsacl and setcifsacl tools (bz 843612)
+- add more missing mount.cifs options to manpage (bz 843596)
+- enable PIE and RELRO (bz 838606)
+- mount.cifs: handle usernames differently for sec=krb5 (bz 826825)
+
 * Tue Apr 17 2012 Jeff Layton <jlayton@redhat.com> 4.8.1-10
 - mount.cifs: don't allow unprivileged users to mount onto dirs they can't chdir into (bz 812782)
 

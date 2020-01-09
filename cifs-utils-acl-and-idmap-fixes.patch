@@ -1,0 +1,1209 @@
+diff --git a/cifs.idmap.8.in b/cifs.idmap.8.in
+index f89f71e..4fd72f4 100644
+--- a/cifs.idmap.8.in
++++ b/cifs.idmap.8.in
+@@ -22,7 +22,7 @@
+ cifs.idmap \- Userspace helper for mapping ids for Common Internet File System (CIFS)
+ .SH "SYNOPSIS"
+ .HP \w'\ 'u
+-cifs\&.idmap [\-\-version|\-v] {keyid}
++cifs.idmap [--help|-h] [--timeout|-t] [--version|-v] {keyid}
+ .SH "DESCRIPTION"
+ .PP
+ This tool is part of the cifs-utils suite\&.
+@@ -46,6 +46,16 @@ cifs\&.idmap works in conjuction with winbind facility of Samba suite to map own
+ In case winbind and cifs.idmap facilities are unavailable, file objects in a mounted share are assigned uid and gid of the credentials of the process that mounted the share.  So it is strongly recomemended to use mount options of uid and gid to specify a default uid and gid to map owner SIDs and group SIDs respectively in case services of winbind and cifs.idmap facility are unavailable.  
+ .SH "OPTIONS"
+ .PP
++--help|-h
++.RS
++Print the usage message and exit.
++.RE
++.PP
++--timeout|-t
++.RS 4
++Set the expiration timer, in seconds on the key. The default is 600 seconds (10 minutes). Setting this to 0 will cause the key to never expire.
++.RE
++.PP
+ \-\-version|\-v
+ .RS 4
+ Print version number and exit\&.
+diff --git a/cifs.idmap.c b/cifs.idmap.c
+index 80802d7..792ea58 100644
+--- a/cifs.idmap.c
++++ b/cifs.idmap.c
+@@ -42,35 +42,80 @@
+ #include <limits.h>
+ #include <wbclient.h>
+ 
++#include "cifsacl.h"
++
+ static const char *prog = "cifs.idmap";
+ 
++static const struct option long_options[] = {
++	{"help", 0, NULL, 'h'},
++	{"timeout", 1, NULL, 't'},
++	{"version", 0, NULL, 'v'},
++	{NULL, 0, NULL, 0}
++};
++
+ static void usage(void)
+ {
+-	fprintf(stderr, "Usage: %s key_serial\n", prog);
++	fprintf(stderr, "Usage: %s [-h] [-v] [-t timeout] key_serial\n", prog);
+ }
+ 
+-char *strget(const char *str, char *substr)
++char *strget(const char *str, const char *substr)
+ {
+-	int len, sublen, retlen;
+-	char *retstr, *substrptr;
++	int sublen;
++	char *substrptr;
+ 
+-	sublen = strlen(substr);
++	/* find the prefix */
+ 	substrptr = strstr(str, substr);
+-	if (substrptr) {
+-		len = strlen(substrptr);
+-		substrptr += sublen;
+-
+-		retlen = len - sublen;
+-		if (retlen > 0) {
+-			retstr = malloc(retlen + 1);
+-			if (retstr) {
+-				strncpy(retstr, substrptr, retlen);
+-				return retstr;
+-			}
+-		}
+-	}
++	if (!substrptr)
++		return substrptr;
++
++	/* skip over it */
++	sublen = strlen(substr);
++	substrptr += sublen;
+ 
+-	return NULL;
++	/* if there's nothing after the prefix, return NULL */
++	if (*substrptr == '\0')
++		return NULL;
++
++	return substrptr;
++}
++
++/*
++ * Convert a string representation of unsigned int into a numeric one. Also
++ * check for incomplete string conversion and overflow.
++ */
++static int
++str_to_uint(const char *src, unsigned int *dst)
++{
++	unsigned long tmp;
++	char *end;
++
++	errno = 0;
++	tmp = strtoul(src, &end, 0);
++
++	if (*end != '\0')
++		return EINVAL;
++	if (tmp > UINT_MAX)
++		return EOVERFLOW;
++
++	*dst = (unsigned int)tmp;
++	return 0;
++}
++
++/*
++ * Winbind keeps wbcDomainSid fields in host-endian. Copy fields from the
++ * wsid to the csid, while converting the subauthority fields to LE.
++ */
++static void
++wsid_to_csid(struct cifs_sid *csid, struct wbcDomainSid *wsid)
++{
++	int i;
++
++	csid->revision = wsid->sid_rev_num;
++	csid->num_subauth = wsid->num_auths;
++	for (i = 0; i < NUM_AUTHS; i++)
++		csid->authority[i] = wsid->id_auth[i];
++	for (i = 0; i < wsid->num_auths; i++)
++		csid->sub_auth[i] = htole32(wsid->sub_auths[i]);
+ }
+ 
+ static int
+@@ -136,14 +181,24 @@ cifs_idmap(const key_serial_t key, const char *key_descr)
+ 
+ 	sidstr = strget(key_descr, "oi:");
+ 	if (sidstr) {
+-		uid = atoi(sidstr);
+-		syslog(LOG_DEBUG, "SID: %s, uid: %d", sidstr, uid);
++		rc = str_to_uint(sidstr, (unsigned int *)&uid);
++		if (rc) {
++			syslog(LOG_ERR, "Unable to convert %s to uid: %s",
++				sidstr, strerror(rc));
++			goto cifs_idmap_ret;
++		}
++
++		syslog(LOG_DEBUG, "SID: %s, uid: %u", sidstr, uid);
+ 		rc = wbcUidToSid(uid, &sid);
+ 		if (rc)
+-			syslog(LOG_DEBUG, "uid %d to SID  error: %d", uid, rc);
+-		if (!rc) { /* SID has been mapped to a uid */
+-			rc = keyctl_instantiate(key, &sid,
+-					sizeof(struct wbcDomainSid), 0);
++			syslog(LOG_DEBUG, "uid %u to SID  error: %d", uid, rc);
++		if (!rc) {
++			struct cifs_sid csid;
++
++			/* SID has been mapped to a uid */
++			wsid_to_csid(&csid, &sid);
++			rc = keyctl_instantiate(key, &csid,
++					sizeof(struct cifs_sid), 0);
+ 			if (rc)
+ 				syslog(LOG_ERR, "%s: key inst: %s",
+ 					__func__, strerror(errno));
+@@ -154,14 +209,24 @@ cifs_idmap(const key_serial_t key, const char *key_descr)
+ 
+ 	sidstr = strget(key_descr, "gi:");
+ 	if (sidstr) {
+-		gid = atoi(sidstr);
+-		syslog(LOG_DEBUG, "SID: %s, gid: %d", sidstr, gid);
++		rc = str_to_uint(sidstr, (unsigned int *)&gid);
++		if (rc) {
++			syslog(LOG_ERR, "Unable to convert %s to gid: %s",
++				sidstr, strerror(rc));
++			goto cifs_idmap_ret;
++		}
++
++		syslog(LOG_DEBUG, "SID: %s, gid: %u", sidstr, gid);
+ 		rc = wbcGidToSid(gid, &sid);
+ 		if (rc)
+-			syslog(LOG_DEBUG, "gid %d to SID error: %d", gid, rc);
+-		if (!rc) { /* SID has been mapped to a gid */
+-			rc = keyctl_instantiate(key, &sid,
+-					sizeof(struct wbcDomainSid), 0);
++			syslog(LOG_DEBUG, "gid %u to SID error: %d", gid, rc);
++		if (!rc) {
++			struct cifs_sid csid;
++
++			/* SID has been mapped to a gid */
++			wsid_to_csid(&csid, &sid);
++			rc = keyctl_instantiate(key, &csid,
++					sizeof(struct cifs_sid), 0);
+ 			if (rc)
+ 				syslog(LOG_ERR, "%s: key inst: %s",
+ 					__func__, strerror(errno));
+@@ -174,32 +239,46 @@ cifs_idmap(const key_serial_t key, const char *key_descr)
+ 	syslog(LOG_DEBUG, "Invalid key: %s", key_descr);
+ 
+ cifs_idmap_ret:
+-	if (sidstr)
+-		free(sidstr);
+-
+ 	return rc;
+ }
+ 
+ int main(const int argc, char *const argv[])
+ {
+ 	int c;
+-	long rc = 1;
++	long rc;
+ 	key_serial_t key = 0;
+ 	char *buf;
++	unsigned int timeout = 600; /* default idmap cache timeout */
+ 
+ 	openlog(prog, 0, LOG_DAEMON);
+ 
+-	while ((c = getopt_long(argc, argv, "v", NULL, NULL)) != -1) {
++	while ((c = getopt_long(argc, argv, "ht:v",
++					long_options, NULL)) != -1) {
+ 		switch (c) {
++		case 'h':
++			rc = 0;
++			usage();
++			goto out;
++		case 't':
++			rc = str_to_uint(optarg, &timeout);
++			if (rc) {
++				syslog(LOG_ERR, "bad timeout value %s: %s",
++					optarg, strerror(rc));
++				goto out;
++			}
++			break;
+ 		case 'v':
++			rc = 0;
+ 			printf("version: %s\n", VERSION);
+ 			goto out;
+ 		default:
++			rc = EINVAL;
+ 			syslog(LOG_ERR, "unknown option: %c", c);
+ 			goto out;
+ 		}
+ 	}
+ 
++	rc = 1;
+ 	/* is there a key? */
+ 	if (argc <= optind) {
+ 		usage();
+@@ -215,6 +294,14 @@ int main(const int argc, char *const argv[])
+ 		goto out;
+ 	}
+ 
++	/* set timeout on key */
++	rc = keyctl_set_timeout(key, timeout);
++	if (rc == -1) {
++		syslog(LOG_ERR, "unable to set key timeout: %s",
++			strerror(errno));
++		goto out;
++	}
++
+ 	rc = keyctl_describe_alloc(key, &buf);
+ 	if (rc == -1) {
+ 		syslog(LOG_ERR, "keyctl_describe_alloc failed: %s",
+@@ -225,8 +312,7 @@ int main(const int argc, char *const argv[])
+ 
+ 	syslog(LOG_DEBUG, "key description: %s", buf);
+ 
+-	if ((strncmp(buf, "cifs.idmap", sizeof("cifs.idmap") - 1) == 0))
+-		rc = cifs_idmap(key, buf);
++	rc = cifs_idmap(key, buf);
+ out:
+ 	return rc;
+ }
+diff --git a/cifsacl.h b/cifsacl.h
+index 4ea7fd4..68fe0fd 100644
+--- a/cifsacl.h
++++ b/cifsacl.h
+@@ -83,7 +83,7 @@
+ #define NO_PROPAGATE_INHERIT_FLAG 0x04	/* NP */
+ #define INHERIT_ONLY_FLAG 0x08		/* IO */
+ #define INHERITED_ACE_FLAG 0x10		/* I */
+-#define VFLAGS 0x1f
++#define VFLAGS (OBJECT_INHERIT_FLAG|CONTAINER_INHERIT_FLAG|NO_PROPAGATE_INHERIT_FLAG|INHERIT_ONLY_FLAG|INHERITED_ACE_FLAG)
+ 
+ #define ACCESS_ALLOWED	0		/* ALLOWED */
+ #define ACCESS_DENIED	1		/* DENIED */
+@@ -94,15 +94,17 @@
+ #define COMPTYPE 0x2
+ #define COMPFLAG 0x4
+ #define COMPMASK 0x8
+-#define COMPALL 0xf /* COMPSID | COMPTYPE | COMPFLAG | COMPMASK */
++#define COMPALL (COMPSID|COMPTYPE|COMPFLAG|COMPMASK)
+ 
+-enum ace_action {
+-	acedelete = 0,
+-	acemodify,
+-	aceadd,
+-	aceset
+-};
++#define NUM_AUTHS (6)			/* number of authority fields */
++#define SID_MAX_SUB_AUTHORITIES (15)	/* max number of sub authority fields */
+ 
++/*
++ * While not indicated here, the structs below represent on-the-wire data
++ * structures. Any multi-byte values are expected to be little-endian!
++ *
++ * FIXME: should we change these to use endianness annotations?
++ */
+ struct cifs_ntsd {
+ 	uint16_t revision; /* revision level */
+ 	uint16_t type;
+@@ -110,20 +112,20 @@ struct cifs_ntsd {
+ 	uint32_t gsidoffset;
+ 	uint32_t sacloffset;
+ 	uint32_t dacloffset;
+-};
++} __attribute__((packed));
+ 
+ struct cifs_sid {
+ 	uint8_t revision; /* revision level */
+ 	uint8_t num_subauth;
+-	uint8_t authority[6];
+-	uint32_t sub_auth[5]; /* sub_auth[num_subauth] */
+-};
++	uint8_t authority[NUM_AUTHS];
++	uint32_t sub_auth[SID_MAX_SUB_AUTHORITIES];
++} __attribute__((packed));
+ 
+ struct cifs_ctrl_acl {
+ 	uint16_t revision; /* revision level */
+ 	uint16_t size;
+ 	uint32_t num_aces;
+-};
++} __attribute__((packed));
+ 
+ struct cifs_ace {
+ 	uint8_t type;
+@@ -131,6 +133,6 @@ struct cifs_ace {
+ 	uint16_t size;
+ 	uint32_t access_req;
+ 	struct cifs_sid sid; /* ie UUID of user or group who gets these perms */
+-};
++} __attribute__((packed));
+ 
+ #endif /* CIFSACL_H */
+diff --git a/getcifsacl.c b/getcifsacl.c
+index 19b1fec..e4804b0 100644
+--- a/getcifsacl.c
++++ b/getcifsacl.c
+@@ -31,6 +31,7 @@
+ #include <unistd.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <stddef.h>
+ #include <errno.h>
+ #include <limits.h>
+ #include <wbclient.h>
+@@ -38,7 +39,7 @@
+ #include <sys/xattr.h>
+ #include "cifsacl.h"
+ 
+-static const char *prog = "getcifsacl";
++static const char *prog;
+ 
+ static void
+ print_each_ace_mask(uint32_t mask)
+@@ -171,22 +172,41 @@ print_ace_type(uint8_t acetype, int raw)
+ 	}
+ }
+ 
++/*
++ * Winbind keeps wbcDomainSid fields in host-endian. Copy fields from the
++ * csid to the wsid, while converting the subauthority fields from LE.
++ */
++static void
++csid_to_wsid(struct wbcDomainSid *wsid, const struct cifs_sid *csid)
++{
++	int i;
++
++	wsid->sid_rev_num = csid->revision;
++	wsid->num_auths = csid->num_subauth;
++	for (i = 0; i < NUM_AUTHS; i++)
++		wsid->id_auth[i] = csid->authority[i];
++	for (i = 0; i < csid->num_subauth; i++)
++		wsid->sub_auths[i] = le32toh(csid->sub_auth[i]);
++}
++
+ static void
+-print_sid(struct wbcDomainSid *sidptr, int raw)
++print_sid(struct cifs_sid *sidptr, int raw)
+ {
+ 	int i;
+-	int num_auths;
+-	int num_auth = MAX_NUM_AUTHS;
+ 	wbcErr rc;
+ 	char *domain_name = NULL;
+ 	char *sidname = NULL;
+ 	enum wbcSidType sntype;
++	unsigned long long id_auth_val;
++	struct wbcDomainSid wsid;
++
++	csid_to_wsid(&wsid, sidptr);
+ 
+ 	if (raw)
+ 		goto print_sid_raw;
+ 
+-	rc = wbcLookupSid(sidptr, &domain_name, &sidname, &sntype);
+-	if (!rc) {
++	rc = wbcLookupSid(&wsid, &domain_name, &sidname, &sntype);
++	if (WBC_ERROR_IS_OK(rc)) {
+ 		printf("%s", domain_name);
+ 		if (strlen(domain_name))
+ 			printf("%c", '\\');
+@@ -195,36 +215,55 @@ print_sid(struct wbcDomainSid *sidptr, int raw)
+ 	}
+ 
+ print_sid_raw:
+-	num_auths = sidptr->num_auths;
+-	printf("S");
+-	printf("-%d", sidptr->sid_rev_num);
+-	for (i = 0; i < num_auth; ++i)
+-		if (sidptr->id_auth[i])
+-			printf("-%d", sidptr->id_auth[i]);
+-	for (i = 0; i < num_auths; i++)
+-		printf("-%u", le32toh(sidptr->sub_auths[i]));
++	printf("S-%hhu", wsid.sid_rev_num);
++
++	id_auth_val = (unsigned long long)wsid.id_auth[5];
++	id_auth_val += (unsigned long long)wsid.id_auth[4] << 8;
++	id_auth_val += (unsigned long long)wsid.id_auth[3] << 16;
++	id_auth_val += (unsigned long long)wsid.id_auth[2] << 24;
++	id_auth_val += (unsigned long long)wsid.id_auth[1] << 32;
++	id_auth_val += (unsigned long long)wsid.id_auth[0] << 48;
++
++	/*
++	 * MS-DTYP states that if the authority is >= 2^32, then it should be
++	 * expressed as a hex value.
++	 */
++	if (id_auth_val <= UINT_MAX)
++		printf("-%llu", id_auth_val);
++	else
++		printf("-0x%llx", id_auth_val);
++
++	for (i = 0; i < wsid.num_auths; i++)
++		printf("-%u", wsid.sub_auths[i]);
+ }
+ 
+ static void
+ print_ace(struct cifs_ace *pace, char *end_of_acl, int raw)
+ {
+-	/* validate that we do not go past end of acl */
++	uint16_t size;
++
++	/* make sure we can safely get to "size" */
++	if (end_of_acl < (char *)pace + offsetof(struct cifs_ace, size) + 1)
++		return;
++
++	size = le16toh(pace->size);
+ 
++	/* 16 == size of cifs_ace when cifs_sid has no subauths */
+ 	if (le16toh(pace->size) < 16)
+ 		return;
+ 
++	/* validate that we do not go past end of acl */
+ 	if (end_of_acl < (char *)pace + le16toh(pace->size))
+ 		return;
+ 
+ 	printf("ACL:");
+-	print_sid((struct wbcDomainSid *)&pace->sid, raw);
++	print_sid((struct cifs_sid *)&pace->sid, raw);
+ 	printf(":");
+ 	print_ace_type(pace->type, raw);
+ 	printf("/");
+ 	print_ace_flags(pace->flags, raw);
+ 	printf("/");
+-	print_ace_mask(pace->access_req, raw);
+-
++	print_ace_mask(le32toh(pace->access_req), raw);
+ 
+ 	return;
+ }
+@@ -261,14 +300,14 @@ parse_dacl(struct cifs_ctrl_acl *pdacl, char *end_of_acl, int raw)
+ }
+ 
+ static int
+-parse_sid(struct wbcDomainSid *psid, char *end_of_acl, char *title, int raw)
++parse_sid(struct cifs_sid *psid, char *end_of_acl, char *title, int raw)
+ {
+ 	if (end_of_acl < (char *)psid + 8)
+ 		return -EINVAL;
+ 
+ 	if (title)
+ 		printf("%s:", title);
+-	print_sid((struct wbcDomainSid *)psid, raw);
++	print_sid((struct cifs_sid *)psid, raw);
+ 	printf("\n");
+ 
+ 	return 0;
+@@ -280,20 +319,20 @@ parse_sec_desc(struct cifs_ntsd *pntsd, ssize_t acl_len, int raw)
+ 	int rc;
+ 	uint32_t dacloffset;
+ 	char *end_of_acl = ((char *)pntsd) + acl_len;
+-	struct wbcDomainSid *owner_sid_ptr, *group_sid_ptr;
++	struct cifs_sid *owner_sid_ptr, *group_sid_ptr;
+ 	struct cifs_ctrl_acl *dacl_ptr; /* no need for SACL ptr */
+ 
+ 	if (pntsd == NULL)
+ 		return -EIO;
+ 
+-	owner_sid_ptr = (struct wbcDomainSid *)((char *)pntsd +
++	owner_sid_ptr = (struct cifs_sid *)((char *)pntsd +
+ 				le32toh(pntsd->osidoffset));
+-	group_sid_ptr = (struct wbcDomainSid *)((char *)pntsd +
++	group_sid_ptr = (struct cifs_sid *)((char *)pntsd +
+ 				le32toh(pntsd->gsidoffset));
+ 	dacloffset = le32toh(pntsd->dacloffset);
+ 	dacl_ptr = (struct cifs_ctrl_acl *)((char *)pntsd + dacloffset);
+-	printf("REVISION:0x%x\n", pntsd->revision);
+-	printf("CONTROL:0x%x\n", pntsd->type);
++	printf("REVISION:0x%x\n", le16toh(pntsd->revision));
++	printf("CONTROL:0x%x\n", le16toh(pntsd->type));
+ 
+ 	rc = parse_sid(owner_sid_ptr, end_of_acl, "OWNER", raw);
+ 	if (rc)
+@@ -333,6 +372,7 @@ main(const int argc, char *const argv[])
+ 	size_t bufsize = BUFSIZE;
+ 	char *filename, *attrval;
+ 
++	prog = basename(argv[0]);
+ 	openlog(prog, 0, LOG_DAEMON);
+ 
+ 	while ((c = getopt_long(argc, argv, "r:v", NULL, NULL)) != -1) {
+diff --git a/mount.cifs.c b/mount.cifs.c
+index 689a039..fcf1d20 100644
+--- a/mount.cifs.c
++++ b/mount.cifs.c
+@@ -1381,6 +1381,7 @@ static int parse_unc(const char *unc_name, struct parsed_mount_info *parsed_info
+ 	}
+ 
+ 	/* Set up "host" and "share" pointers based on UNC format. */
++	/* TODO: Remove support for NFS syntax as of cifs-utils-6.0. */
+ 	if (strncmp(unc_name, "//", 2) && strncmp(unc_name, "\\\\", 2)) {
+ 		/*
+ 		 * check for nfs syntax (server:/share/prepath)
+@@ -1397,6 +1398,9 @@ static int parse_unc(const char *unc_name, struct parsed_mount_info *parsed_info
+ 		share++;
+ 		if (*share == '/')
+ 			++share;
++		fprintf(stderr, "WARNING: using NFS syntax for mounting CIFS "
++			"shares is deprecated and will be removed in cifs-utils"
++			"-6.0. Please migrate to UNC syntax.\n");
+ 	} else {
+ 		host = unc_name + 2;
+ 		hostlen = strcspn(host, "/\\");
+diff --git a/setcifsacl.1 b/setcifsacl.1
+index be8af0c..8550201 100644
+--- a/setcifsacl.1
++++ b/setcifsacl.1
+@@ -30,6 +30,10 @@ This tool is part of the cifs-utils suite\&.
+ setcifsacl is a userspace helper program for the Linux CIFS client file system.  It is intended to alter an ACL of a security descriptor for a file system object.  It is best utilized when an option of cifsacl is specified when mounting a cifs share in conjunction with winbind facility of Samba suite.  Whether a security descriptor to be set is applied or not is determined by the CIFS/SMB server.
+ .SH "OPTIONS"
+ .PP
++-h
++.RS 4
++Print usage message and exit.
++.RE
+ \-v
+ .RS 4
+ Print version number and exit\&.
+diff --git a/setcifsacl.c b/setcifsacl.c
+index 502c839..e1713c3 100644
+--- a/setcifsacl.c
++++ b/setcifsacl.c
+@@ -39,23 +39,42 @@
+ #include <sys/xattr.h>
+ #include "cifsacl.h"
+ 
+-static const char *prog = "setcifsacl";
++static const char *prog;
++
++enum setcifsacl_actions {
++	ActUnknown = -1,
++	ActDelete,
++	ActModify,
++	ActAdd,
++	ActSet
++};
+ 
+ static void
+-copy_sec_desc(const struct cifs_ntsd *pntsd, struct cifs_ntsd *pnntsd,
+-		int numaces, int acessize)
++copy_cifs_sid(struct cifs_sid *dst, const struct cifs_sid *src)
+ {
+ 	int i;
+ 
++	dst->revision = src->revision;
++	dst->num_subauth = src->num_subauth;
++	for (i = 0; i < NUM_AUTHS; i++)
++		dst->authority[i] = src->authority[i];
++	for (i = 0; i < src->num_subauth; i++)
++		dst->sub_auth[i] = src->sub_auth[i];
++}
++
++static void
++copy_sec_desc(const struct cifs_ntsd *pntsd, struct cifs_ntsd *pnntsd,
++		int numaces, int acessize)
++{
+ 	int osidsoffset, gsidsoffset, dacloffset;
+ 	struct cifs_sid *owner_sid_ptr, *group_sid_ptr;
+ 	struct cifs_sid *nowner_sid_ptr, *ngroup_sid_ptr;
+ 	struct cifs_ctrl_acl *dacl_ptr, *ndacl_ptr;
+ 
+ 	/* copy security descriptor control portion */
+-	osidsoffset = htole32(pntsd->osidoffset);
+-	gsidsoffset = htole32(pntsd->gsidoffset);
+-	dacloffset = htole32(pntsd->dacloffset);
++	osidsoffset = le32toh(pntsd->osidoffset);
++	gsidsoffset = le32toh(pntsd->gsidoffset);
++	dacloffset = le32toh(pntsd->dacloffset);
+ 
+ 	pnntsd->revision = pntsd->revision;
+ 	pnntsd->type = pntsd->type;
+@@ -73,24 +92,12 @@ copy_sec_desc(const struct cifs_ntsd *pntsd, struct cifs_ntsd *pnntsd,
+ 	/* copy owner sid */
+ 	owner_sid_ptr = (struct cifs_sid *)((char *)pntsd + osidsoffset);
+ 	nowner_sid_ptr = (struct cifs_sid *)((char *)pnntsd + osidsoffset);
+-
+-	nowner_sid_ptr->revision = owner_sid_ptr->revision;
+-	nowner_sid_ptr->num_subauth = owner_sid_ptr->num_subauth;
+-	for (i = 0; i < 6; i++)
+-		nowner_sid_ptr->authority[i] = owner_sid_ptr->authority[i];
+-	for (i = 0; i < 5; i++)
+-		nowner_sid_ptr->sub_auth[i] = owner_sid_ptr->sub_auth[i];
++	copy_cifs_sid(nowner_sid_ptr, owner_sid_ptr);
+ 
+ 	/* copy group sid */
+ 	group_sid_ptr = (struct cifs_sid *)((char *)pntsd + gsidsoffset);
+ 	ngroup_sid_ptr = (struct cifs_sid *)((char *)pnntsd + gsidsoffset);
+-
+-	ngroup_sid_ptr->revision = group_sid_ptr->revision;
+-	ngroup_sid_ptr->num_subauth = group_sid_ptr->num_subauth;
+-	for (i = 0; i < 6; i++)
+-		ngroup_sid_ptr->authority[i] = group_sid_ptr->authority[i];
+-	for (i = 0; i < 5; i++)
+-		ngroup_sid_ptr->sub_auth[i] = group_sid_ptr->sub_auth[i];
++	copy_cifs_sid(ngroup_sid_ptr, group_sid_ptr);
+ 
+ 	return;
+ }
+@@ -98,22 +105,15 @@ copy_sec_desc(const struct cifs_ntsd *pntsd, struct cifs_ntsd *pnntsd,
+ static int
+ copy_ace(struct cifs_ace *dace, struct cifs_ace *sace)
+ {
+-	int i;
+-
+ 	dace->type = sace->type;
+ 	dace->flags = sace->flags;
+-	dace->access_req = htole32(sace->access_req);
++	dace->access_req = sace->access_req;
+ 
+-	dace->sid.revision = sace->sid.revision;
+-	dace->sid.num_subauth = sace->sid.num_subauth;
+-	for (i = 0; i < 6; i++)
+-		dace->sid.authority[i] = sace->sid.authority[i];
+-	for (i = 0; i < sace->sid.num_subauth; i++)
+-		dace->sid.sub_auth[i] = sace->sid.sub_auth[i];
++	copy_cifs_sid(&dace->sid, &sace->sid);
+ 
+-	dace->size = htole16(sace->size);
++	dace->size = sace->size;
+ 
+-	return dace->size;
++	return le16toh(dace->size);
+ }
+ 
+ static int
+@@ -126,7 +126,7 @@ compare_aces(struct cifs_ace *sace, struct cifs_ace *dace, int compflags)
+ 			return 0;
+ 		if (dace->sid.num_subauth != sace->sid.num_subauth)
+ 			return 0;
+-		for (i = 0; i < 6; i++) {
++		for (i = 0; i < NUM_AUTHS; i++) {
+ 			if (dace->sid.authority[i] != sace->sid.authority[i])
+ 				return 0;
+ 		}
+@@ -147,7 +147,7 @@ compare_aces(struct cifs_ace *sace, struct cifs_ace *dace, int compflags)
+ 	}
+ 
+ 	if (compflags & COMPMASK) {
+-		if (dace->access_req != htole32(sace->access_req))
++		if (dace->access_req != sace->access_req)
+ 			return 0;
+ 	}
+ 
+@@ -329,19 +329,16 @@ get_numfaces(struct cifs_ntsd *pntsd, ssize_t acl_len,
+ 	struct cifs_ctrl_acl *ldaclptr;
+ 	char *end_of_acl = ((char *)pntsd) + acl_len;
+ 
+-	if (pntsd == NULL)
+-		return 0;
+-
+ 	dacloffset = le32toh(pntsd->dacloffset);
+ 	if (!dacloffset)
+ 		return 0;
+-	else {
+-		ldaclptr = (struct cifs_ctrl_acl *)((char *)pntsd + dacloffset);
+-		/* validate that we do not go past end of acl */
+-		if (end_of_acl >= (char *)ldaclptr + le16toh(ldaclptr->size)) {
+-			numfaces = le32toh(ldaclptr->num_aces);
+-			*daclptr = ldaclptr;
+-		}
++
++	ldaclptr = (struct cifs_ctrl_acl *)((char *)pntsd + dacloffset);
++
++	/* validate that we do not go past end of acl */
++	if (end_of_acl >= (char *)ldaclptr + le16toh(ldaclptr->size)) {
++		numfaces = le32toh(ldaclptr->num_aces);
++		*daclptr = ldaclptr;
+ 	}
+ 
+ 	return numfaces;
+@@ -350,74 +347,88 @@ get_numfaces(struct cifs_ntsd *pntsd, ssize_t acl_len,
+ static struct cifs_ace **
+ build_fetched_aces(char *daclptr, int numfaces)
+ {
+-	int i, j, rc = 0, acl_size;
++	int i, acl_size;
+ 	char *acl_base;
+ 	struct cifs_ace *pace, **facesptr;
+ 
+-	facesptr = (struct cifs_ace **)malloc(numfaces *
+-					sizeof(struct cifs_aces *));
++	facesptr = calloc(numfaces, sizeof(struct cifs_aces *));
+ 	if (!facesptr) {
+ 		printf("%s: Error %d allocating ACE array",
+ 				__func__, errno);
+-		rc = errno;
++		return facesptr;
+ 	}
+ 
+ 	acl_base = daclptr;
+ 	acl_size = sizeof(struct cifs_ctrl_acl);
+ 	for (i = 0; i < numfaces; ++i) {
+ 		facesptr[i] = malloc(sizeof(struct cifs_ace));
+-		if (!facesptr[i]) {
+-			rc = errno;
+-			goto build_fetched_aces_ret;
+-		}
++		if (!facesptr[i])
++			goto build_fetched_aces_err;
+ 		pace = (struct cifs_ace *) (acl_base + acl_size);
+ 		memcpy(facesptr[i], pace, sizeof(struct cifs_ace));
+ 		acl_base = (char *)pace;
+ 		acl_size = le16toh(pace->size);
+ 	}
+-
+-build_fetched_aces_ret:
+-	if (rc) {
+-		printf("%s: Invalid fetched ace\n", __func__);
+-		if (i) {
+-			for (j = i; j >= 0; --j)
+-				free(facesptr[j]);
+-		}
+-		free(facesptr);
+-	}
+ 	return facesptr;
++
++build_fetched_aces_err:
++	printf("%s: Invalid fetched ace\n", __func__);
++	for (i = 0; i < numfaces; ++i)
++		free(facesptr[i]);
++	free(facesptr);
++	return NULL;
+ }
+ 
+-static int
+-verify_ace_sid(char *sidstr, struct cifs_sid *sid)
++/*
++ * Winbind keeps wbcDomainSid fields in host-endian. Copy fields from the
++ * wsid to the csid, while converting the subauthority fields to LE.
++ */
++static void
++wsid_to_csid(struct cifs_sid *csid, struct wbcDomainSid *wsid)
+ {
+-	int rc;
+-	char *lstr;
+-	struct passwd *winpswdptr;
+-
+-	lstr = strstr(sidstr, "\\"); /* everything before | */
+-	if (lstr)
+-		++lstr;
+-	else
+-		lstr = sidstr;
++	int i;
+ 
+-	/* Check if it is a (raw) SID (string) */
+-	rc = wbcStringToSid(lstr, (struct wbcDomainSid *)sid);
+-	if (!rc)
+-		return rc;
++	csid->revision = wsid->sid_rev_num;
++	csid->num_subauth = wsid->num_auths;
++	for (i = 0; i < NUM_AUTHS; i++)
++		csid->authority[i] = wsid->id_auth[i];
++	for (i = 0; i < wsid->num_auths; i++)
++		csid->sub_auth[i] = htole32(wsid->sub_auths[i]);
++}
+ 
+-	/* Check if it a name (string) which can be resolved to a SID*/
+-	rc = wbcGetpwnam(lstr, &winpswdptr);
+-	if (rc) {
+-		printf("%s: Invalid user name: %s\n", __func__, sidstr);
+-		return rc;
+-	}
+-	rc = wbcUidToSid(winpswdptr->pw_uid, (struct wbcDomainSid *)sid);
+-	if (rc) {
+-		printf("%s: Invalid user: %s\n", __func__, sidstr);
++static int
++verify_ace_sid(char *sidstr, struct cifs_sid *csid)
++{
++	int i;
++	wbcErr rc;
++	char *name, *domain;
++	enum wbcSidType type;
++	struct wbcDomainSid wsid;
++
++	name = strchr(sidstr, '\\');
++	if (!name) {
++		/* might be a raw string representation of SID */
++		rc = wbcStringToSid(sidstr, &wsid);
++		if (WBC_ERROR_IS_OK(rc))
++			goto convert_sid;
++
++		domain = "";
++		name = sidstr;
++	} else {
++		domain = sidstr;
++		*name = '\0';
++		++name;
++	}
++
++	rc = wbcLookupName(domain, name, &wsid, &type);
++	if (!WBC_ERROR_IS_OK(rc)) {
++		printf("%s: Error converting %s\\%s to SID: %s\n",
++			__func__, domain, name, wbcErrorString(rc));
+ 		return rc;
+ 	}
+ 
++convert_sid:
++	wsid_to_csid(csid, &wsid);
+ 	return 0;
+ }
+ 
+@@ -514,62 +525,61 @@ verify_ace_flags(char *flagstr, uint8_t *flagval)
+ }
+ 
+ static uint32_t
+-ace_mask_value(char *maskstr)
++ace_mask_value(char *mask)
+ {
+-	int i, len;
+-	uint32_t maskval = 0x0;
+-	char *lmask;
++	uint32_t maskval = 0;
++	char cur;
+ 
+-	if (!strcmp(maskstr, "FULL"))
++	if (!strcmp(mask, "FULL"))
+ 		return FULL_CONTROL;
+-	else if (!strcmp(maskstr, "CHANGE"))
++	if (!strcmp(mask, "CHANGE"))
+ 		return CHANGE;
+-	else if (!strcmp(maskstr, "D"))
+-		return DELETE;
+-	else if (!strcmp(maskstr, "READ"))
++	if (!strcmp(mask, "READ"))
+ 		return EREAD;
+-	else {
+-		len = strlen(maskstr);
+-		lmask = maskstr;
+-		for (i = 0; i < len; ++i, ++lmask) {
+-			if (*lmask == 'R')
+-				maskval |= EREAD;
+-			else if (*lmask == 'W')
+-				maskval |= EWRITE;
+-			else if (*lmask == 'X')
+-				maskval |= EXEC;
+-			else if (*lmask == 'D')
+-				maskval |= DELETE;
+-			else if (*lmask == 'P')
+-				maskval |= WRITE_DAC;
+-			else if (*lmask == 'O')
+-				maskval |= WRITE_OWNER;
+-			else
+-				return 0;
++
++	while((cur = *mask++)) {
++		switch(cur) {
++		case 'R':
++			maskval |= EREAD;
++			break;
++		case 'W':
++			maskval |= EWRITE;
++			break;
++		case 'X':
++			maskval |= EXEC;
++			break;
++		case 'D':
++			maskval |= DELETE;
++			break;
++		case 'P':
++			maskval |= WRITE_DAC;
++			break;
++		case 'O':
++			maskval |= WRITE_OWNER;
++			break;
++		default:
++			return 0;
+ 		}
+-		return maskval;
+ 	}
+-
+-	return 0;
++	return maskval;
+ }
+ 
+ static int
+ verify_ace_mask(char *maskstr, uint32_t *maskval)
+ {
+-	char *invalflag;
++	unsigned long val;
++	char *ep;
+ 
+-	if (strstr(maskstr, "0x") || !strcmp(maskstr, "DELDHLD")) {
+-		*maskval = strtol(maskstr, &invalflag, 16);
+-		if (!invalflag) {
+-			printf("%s: Invalid mask: %s\n", __func__, maskstr);
+-			return 1;
+-		}
+-	} else
+-		*maskval = ace_mask_value(maskstr);
++	errno = 0;
++	val = strtoul(maskstr, &ep, 0);
++	if (errno == 0 && *ep == '\0')
++		*maskval = htole32((uint32_t)val);
++	else
++		*maskval = htole32(ace_mask_value(maskstr));
+ 
+ 	if (!*maskval) {
+-		printf("%s: Invalid mask %s and value: 0x%x\n",
+-			__func__, maskstr, *maskval);
++		printf("%s: Invalid mask %s (value 0x%x)\n", __func__,
++			maskstr, *maskval);
+ 		return 1;
+ 	}
+ 
+@@ -583,8 +593,7 @@ build_cmdline_aces(char **arrptr, int numcaces)
+ 	char *acesid, *acetype, *aceflag, *acemask;
+ 	struct cifs_ace **cacesptr;
+ 
+-	cacesptr = (struct cifs_ace **)malloc(numcaces *
+-				sizeof(struct cifs_aces *));
++	cacesptr = calloc(numcaces, sizeof(struct cifs_aces *));
+ 	if (!cacesptr) {
+ 		printf("%s: Error %d allocating ACE array", __func__, errno);
+ 		return NULL;
+@@ -630,105 +639,89 @@ build_cmdline_aces(char **arrptr, int numcaces)
+ 			goto build_cmdline_aces_ret;
+ 		}
+ 
+-		cacesptr[i]->size = 1 + 1 + 2 + 4 + 1 + 1 + 6 +
+-				(cacesptr[i]->sid.num_subauth * 4);
++		cacesptr[i]->size = htole16(1 + 1 + 2 + 4 + 1 + 1 + 6 +
++					    cacesptr[i]->sid.num_subauth * 4);
+ 	}
+ 	return cacesptr;
+ 
+ build_cmdline_aces_ret:
+-	for (; i >= 0; --i)
++	for (i = 0; i < numcaces; ++i)
+ 		free(cacesptr[i]);
+ 	free(cacesptr);
+ 	return NULL;
+ }
+ 
+ static char **
+-parse_cmdline_aces(char *optarg, int numcaces)
++parse_cmdline_aces(char *acelist, int numcaces)
+ {
+-	int i = 0, len;
++	int i = 0;
+ 	char *acestr, *vacestr, **arrptr = NULL;
+ 
+-	errno = EINVAL;
+ 	arrptr = (char **)malloc(numcaces * sizeof(char *));
+ 	if (!arrptr) {
+-		printf("%s: Error %d allocating char array\n", __func__, errno);
++		printf("%s: Unable to allocate char array\n", __func__);
+ 		return NULL;
+ 	}
+ 
+ 	while (i < numcaces) {
+-		acestr = strtok(optarg, ","); /* everything before , */
+-		if (acestr) {
+-			vacestr = strstr(acestr, "ACL:"); /* ace as ACL:*" */
+-			if (vacestr) {
+-				vacestr = strchr(vacestr, ':');
+-				if (vacestr)
+-					++vacestr; /* go past : */
+-				if (vacestr) {
+-					len = strlen(vacestr);
+-					arrptr[i] = malloc(len + 1);
+-					if (!arrptr[i])
+-						goto parse_cmdline_aces_ret;
+-					strcpy(arrptr[i], vacestr);
+-					++i;
+-				} else
+-					goto parse_cmdline_aces_ret;
+-			} else
+-				goto parse_cmdline_aces_ret;
+-		} else
+-			goto parse_cmdline_aces_ret;
+-		optarg = NULL;
++		acestr = strtok(acelist, ","); /* everything before , */
++		if (!acestr)
++			goto parse_cmdline_aces_err;
++
++		vacestr = strstr(acestr, "ACL:"); /* ace as ACL:*" */
++		if (!vacestr)
++			goto parse_cmdline_aces_err;
++		vacestr += 4; /* skip past "ACL:" */
++		if (*vacestr) {
++			arrptr[i] = vacestr;
++			++i;
++		}
++		acelist = NULL;
+ 	}
+-	errno = 0;
+ 	return arrptr;
+ 
+-parse_cmdline_aces_ret:
+-	printf("%s: Error %d parsing ACEs\n", __func__, errno);
+-	for (;  i >= 0; --i)
+-		free(arrptr[i]);
++parse_cmdline_aces_err:
++	printf("%s: Error parsing ACEs\n", __func__);
+ 	free(arrptr);
+ 	return NULL;
+ }
+ 
++/* How many aces were provided on the command-line? Count the commas. */
+ static unsigned int
+-get_numcaces(const char *optarg)
++get_numcaces(const char *aces)
+ {
+-	int i, len;
+-	unsigned int numcaces = 1;
++	unsigned int num = 1;
++	const char *current;
+ 
+-	if (!optarg)
+-		return 0;
++	current = aces;
++	while((current = strchr(current, ',')))
++		++num;
+ 
+-	len = strlen(optarg);
+-	for (i = 0; i < len; ++i) {
+-		if (*(optarg + i) == ',')
+-			++numcaces;
+-	}
+-
+-	return numcaces;
++	return num;
+ }
+ 
+ static int
+ setacl_action(struct cifs_ntsd *pntsd, struct cifs_ntsd **npntsd,
+ 		ssize_t *bufsize, struct cifs_ace **facesptr, int numfaces,
+ 		struct cifs_ace **cacesptr, int numcaces,
+-		int maction)
++		enum setcifsacl_actions maction)
+ {
+ 	int rc = 1;
+ 
+ 	switch (maction) {
+-	case 0:
++	case ActDelete:
+ 		rc = ace_delete(pntsd, npntsd, bufsize, facesptr,
+ 				numfaces, cacesptr, numcaces);
+ 		break;
+-	case 1:
++	case ActModify:
+ 		rc = ace_modify(pntsd, npntsd, bufsize, facesptr,
+ 				numfaces, cacesptr, numcaces);
+ 		break;
+-	case 2:
++	case ActAdd:
+ 		rc = ace_add(pntsd, npntsd, bufsize, facesptr,
+ 				numfaces, cacesptr, numcaces);
+ 		break;
+-	case 3:
++	case ActSet:
+ 		rc = ace_set(pntsd, npntsd, bufsize, cacesptr, numcaces);
+ 		break;
+ 	default:
+@@ -771,52 +764,62 @@ setcifsacl_usage(void)
+ int
+ main(const int argc, char *const argv[])
+ {
+-	int i, rc, c, numcaces, numfaces, maction = -1;
++	int i, rc, c, numcaces, numfaces;
++	enum setcifsacl_actions maction = ActUnknown;
+ 	ssize_t attrlen, bufsize = BUFSIZE;
+-	char *filename, *attrval, **arrptr = NULL;
++	char *ace_list, *filename, *attrval, **arrptr = NULL;
+ 	struct cifs_ctrl_acl *daclptr = NULL;
+ 	struct cifs_ace **cacesptr = NULL, **facesptr = NULL;
+ 	struct cifs_ntsd *ntsdptr = NULL;
+ 
++	prog = basename(argv[0]);
++
+ 	openlog(prog, 0, LOG_DAEMON);
+ 
+-	c = getopt(argc, argv, "v:D:M:a:S:?");
++	c = getopt(argc, argv, "hvD:M:a:S:");
+ 	switch (c) {
+-	case 'v':
+-		printf("Version: %s\n", VERSION);
+-		goto out;
+ 	case 'D':
+-		maction = 0;
++		maction = ActDelete;
++		ace_list = optarg;
+ 		break;
+ 	case 'M':
+-		maction = 1;
++		maction = ActModify;
++		ace_list = optarg;
+ 		break;
+ 	case 'a':
+-		maction = 2;
++		maction = ActAdd;
++		ace_list = optarg;
+ 		break;
+ 	case 'S':
+-		maction = 3;
++		maction = ActSet;
++		ace_list = optarg;
+ 		break;
+-	case '?':
++	case 'h':
+ 		setcifsacl_usage();
+ 		return 0;
++	case 'v':
++		printf("Version: %s\n", VERSION);
++		return 0;
+ 	default:
+-		break;
++		setcifsacl_usage();
++		return -1;
+ 	}
+ 
++	/* We expect 1 argument in addition to the option */
+ 	if (argc != 4) {
+ 		setcifsacl_usage();
+ 		return -1;
+ 	}
+ 	filename = argv[3];
+ 
+-	numcaces = get_numcaces(optarg);
+-	if (!numcaces) {
++	if (!ace_list) {
+ 		printf("%s: No valid ACEs specified\n", __func__);
+ 		return -1;
+ 	}
+ 
+-	arrptr = parse_cmdline_aces(optarg, numcaces);
++	numcaces = get_numcaces(ace_list);
++
++	arrptr = parse_cmdline_aces(ace_list, numcaces);
+ 	if (!arrptr)
+ 		goto setcifsacl_numcaces_ret;
+ 
+@@ -850,7 +853,7 @@ cifsacl:
+ 	}
+ 
+ 	numfaces = get_numfaces((struct cifs_ntsd *)attrval, attrlen, &daclptr);
+-	if (!numfaces && maction != 2) { /* if we are not adding aces */
++	if (!numfaces && maction != ActAdd) { /* if we are not adding aces */
+ 		printf("%s: Empty DACL\n", __func__);
+ 		goto setcifsacl_facenum_ret;
+ 	}
+@@ -870,7 +873,6 @@ cifsacl:
+ 		printf("%s: setxattr error: %s\n", __func__, strerror(errno));
+ 	goto setcifsacl_facenum_ret;
+ 
+-out:
+ 	return 0;
+ 
+ setcifsacl_action_ret:
+@@ -890,8 +892,6 @@ setcifsacl_cmdlineverify_ret:
+ 	free(cacesptr);
+ 
+ setcifsacl_cmdlineparse_ret:
+-	for (i = 0; i < numcaces; ++i)
+-		free(arrptr[i]);
+ 	free(arrptr);
+ 
+ setcifsacl_numcaces_ret:
