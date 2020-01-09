@@ -3,7 +3,7 @@
 
 Name:            cifs-utils
 Version:         6.2
-Release:         4%{pre_release}%{?dist}
+Release:         6%{pre_release}%{?dist}
 Summary:         Utilities for mounting and managing CIFS mounts
 
 Group:           System Environment/Daemons
@@ -99,6 +99,12 @@ fi
 %{_includedir}/cifsidmap.h
 
 %changelog
+* Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 6.2-6
+- Mass rebuild 2014-01-24
+
+* Fri Dec 27 2013 Daniel Mach <dmach@redhat.com> - 6.2-5
+- Mass rebuild 2013-12-27
+
 * Mon Oct 14 2013 Jeff Layton <jlayton@redhat.com> 6.2-4
 - fix use-after-free in asn1_write
 
