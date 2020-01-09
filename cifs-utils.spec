@@ -3,7 +3,7 @@
 
 Name:            cifs-utils
 Version:         6.2
-Release:         6%{pre_release}%{?dist}
+Release:         7%{pre_release}%{?dist}
 Summary:         Utilities for mounting and managing CIFS mounts
 
 Group:           System Environment/Daemons
@@ -24,6 +24,7 @@ Patch3:          0003-asn1-remove-some-usused-functions.patch
 Patch4:          0004-data_blob-clean-out-unused-functions.patch
 Patch5:          0005-mount.cifs-fix-bad-free-of-string-returned-by-dirnam.patch
 Patch6:		 0001-asn1-fix-use-after-free-in-asn1_write.patch
+Patch7:		 0001-cifs-use-krb5_kt_default-to-determine-default-keytab.patch
 
 %description
 The SMB/CIFS protocol is a standard file sharing protocol widely deployed
@@ -50,6 +51,7 @@ necessary for building ID mapping plugins for cifs-utils.
 %patch4 -p1
 %patch5 -p1
 %patch6 -p1
+%patch7 -p1
 
 %build
 %configure --prefix=/usr ROOTSBINDIR=%{_sbindir}
@@ -99,6 +101,9 @@ fi
 %{_includedir}/cifsidmap.h
 
 %changelog
+* Fri Aug 29 2014 Sachin Prabhu <sprabhu@redhat.com> - 6.2-7
+-  use krb5_kt_default() to determine default keytab location (bz#1083795)
+
 * Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 6.2-6
 - Mass rebuild 2014-01-24
 
