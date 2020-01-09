@@ -3,7 +3,7 @@
 
 Name:           cifs-utils
 Version:        4.8.1
-Release:        18%{pre_release}%{?dist}
+Release:        19%{pre_release}%{?dist}
 Summary:        Utilities for mounting and managing CIFS mounts
 
 Group:          System Environment/Daemons
@@ -35,6 +35,8 @@ Patch18:        contrib-add-a-set-of-sample-etc-request-key.d-files.patch
 Patch19:        mount.cifs-fix-the-conflict-between-rwpidforward-and.patch
 Patch20:        mount.cifs-running-out-of-addresses-is-not-a-system-.patch
 Patch21:        cifs-utils-acl-and-idmap-fixes.patch
+Patch22:        setcifsacl-fix-infinite-loop-in-getnumcaces.patch
+Patch23:        setcifsacl-fix-offset-calculation-in-set-code.patch
 
 BuildRequires:  libcap-ng-devel libtalloc-devel krb5-devel keyutils-libs-devel autoconf automake samba-winbind-devel
 Requires:       keyutils
@@ -71,6 +73,8 @@ file system.
 %patch19 -p1
 %patch20 -p1
 %patch21 -p1
+%patch22 -p1
+%patch23 -p1
 
 %build
 %configure --prefix=/usr
@@ -103,6 +107,9 @@ rm -rf %{buildroot}
 %config(noreplace) %{_sysconfdir}/request-key.d/cifs.spnego.conf
 
 %changelog
+* Wed Mar 06 2013 Jeff Layton <jlayton@redhat.com> 4.8.1-19
+- fix infinite loop and corrupt "set" command in setcifsacl (bz 905721)
+
 * Fri Nov 09 2012 Jeff Layton <jlayton@redhat.com> 4.8.1-18
 - don't cast freely between wbcDomainSid and cifs_sid (bz 843612)
 
