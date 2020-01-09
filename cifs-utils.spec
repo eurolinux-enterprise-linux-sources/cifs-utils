@@ -3,7 +3,7 @@
 
 Name:           cifs-utils
 Version:        4.8.1
-Release:        19%{pre_release}%{?dist}
+Release:        20%{pre_release}%{?dist}
 Summary:        Utilities for mounting and managing CIFS mounts
 
 Group:          System Environment/Daemons
@@ -37,6 +37,7 @@ Patch20:        mount.cifs-running-out-of-addresses-is-not-a-system-.patch
 Patch21:        cifs-utils-acl-and-idmap-fixes.patch
 Patch22:        setcifsacl-fix-infinite-loop-in-getnumcaces.patch
 Patch23:        setcifsacl-fix-offset-calculation-in-set-code.patch
+Patch24:	cifs-upcall-use-krb5_kt_default-to-determine-default-keytab.patch
 
 BuildRequires:  libcap-ng-devel libtalloc-devel krb5-devel keyutils-libs-devel autoconf automake samba-winbind-devel
 Requires:       keyutils
@@ -75,6 +76,7 @@ file system.
 %patch21 -p1
 %patch22 -p1
 %patch23 -p1
+%patch24 -p1
 
 %build
 %configure --prefix=/usr
@@ -107,6 +109,9 @@ rm -rf %{buildroot}
 %config(noreplace) %{_sysconfdir}/request-key.d/cifs.spnego.conf
 
 %changelog
+* Thu Feb 26 2015 Sachin Prabhu <sprabhu@redhat.com> 4.8.1-20
+- use krb5_kt_default() to determine default keytab location (bz 1080482)
+
 * Wed Mar 06 2013 Jeff Layton <jlayton@redhat.com> 4.8.1-19
 - fix infinite loop and corrupt "set" command in setcifsacl (bz 905721)
 
