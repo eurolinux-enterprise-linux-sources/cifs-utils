@@ -1,0 +1,139 @@
+From 7cc8901e8388c9bcce89f12203c11754af211a60 Mon Sep 17 00:00:00 2001
+From: Jeff Layton <jlayton@samba.org>
+Date: Mon, 25 Jul 2011 14:26:49 -0400
+Subject: [PATCH] mtab: handle ENOSPC/EFBIG condition properly when altering mtab
+
+It's possible that when mount.cifs goes to append the mtab that there
+won't be enough space to do so, and the mntent won't be appended to the
+file in its entirety.
+
+Add a my_endmntent routine that will fflush and then fsync the FILE if
+that succeeds. If either fails then it will truncate the file back to
+its provided size. It will then call endmntent unconditionally.
+
+Have add_mtab call fstat on the opened mtab file in order to get the
+size of the file before it has been appended. Assuming that that
+succeeds, use my_endmntent to ensure that the file is not corrupted
+before closing it. It's possible that we'll have a small race window
+where the mtab is incorrect, but it should be quickly corrected.
+
+This was reported some time ago as CVE-2011-1678:
+
+    http://openwall.com/lists/oss-security/2011/03/04/9
+
+...and it seems to fix the reproducer that I was able to come up with.
+
+Signed-off-by: Jeff Layton <jlayton@samba.org>
+Reviewed-by: Suresh Jayaraman <sjayaraman@suse.de>
+---
+ mount.cifs.c |   27 +++++++++++++++++++++++++--
+ mount.h      |    1 +
+ mtab.c       |   27 +++++++++++++++++++++++++++
+ 3 files changed, 53 insertions(+), 2 deletions(-)
+
+diff --git a/mount.cifs.c b/mount.cifs.c
+index 601f956..62d358b 100644
+--- a/mount.cifs.c
++++ b/mount.cifs.c
+@@ -1428,10 +1428,11 @@ static int check_mtab(const char *progname, const char *devname,
+ static int
+ add_mtab(char *devname, char *mountpoint, unsigned long flags, const char *fstype)
+ {
+-	int rc = 0;
++	int rc = 0, tmprc, fd;
+ 	uid_t uid;
+ 	char *mount_user = NULL;
+ 	struct mntent mountent;
++	struct stat statbuf;
+ 	FILE *pmntfile;
+ 	sigset_t mask, oldmask;
+ 
+@@ -1483,6 +1484,23 @@ add_mtab(char *devname, char *mountpoint, unsigned long flags, const char *fstyp
+ 		goto add_mtab_exit;
+ 	}
+ 
++	fd = fileno(pmntfile);
++	if (fd < 0) {
++		fprintf(stderr, "mntent does not appear to be valid\n");
++		unlock_mtab();
++		rc = EX_FILEIO;
++		goto add_mtab_exit;
++	}
++
++	rc = fstat(fd, &statbuf);
++	if (rc != 0) {
++		fprintf(stderr, "unable to fstat open mtab\n");
++		endmntent(pmntfile);
++		unlock_mtab();
++		rc = EX_FILEIO;
++		goto add_mtab_exit;
++	}
++
+ 	mountent.mnt_fsname = devname;
+ 	mountent.mnt_dir = mountpoint;
+ 	mountent.mnt_type = (char *)(void *)fstype;
+@@ -1514,9 +1532,14 @@ add_mtab(char *devname, char *mountpoint, unsigned long flags, const char *fstyp
+ 	rc = addmntent(pmntfile, &mountent);
+ 	if (rc) {
+ 		fprintf(stderr, "unable to add mount entry to mtab\n");
++		ftruncate(fd, statbuf.st_size);
++		rc = EX_FILEIO;
++	}
++	tmprc = my_endmntent(pmntfile, statbuf.st_size);
++	if (tmprc) {
++		fprintf(stderr, "error %d detected on close of mtab\n", tmprc);
+ 		rc = EX_FILEIO;
+ 	}
+-	endmntent(pmntfile);
+ 	unlock_mtab();
+ 	SAFE_FREE(mountent.mnt_opts);
+ add_mtab_exit:
+diff --git a/mount.h b/mount.h
+index 23ea4f0..6f59781 100644
+--- a/mount.h
++++ b/mount.h
+@@ -34,5 +34,6 @@
+ 
+ extern int lock_mtab(void);
+ extern void unlock_mtab(void);
++extern int my_endmntent(FILE *stream, off_t size);
+ 
+ #endif /* ! _MOUNT_H_ */
+diff --git a/mtab.c b/mtab.c
+index 64e7250..6aa0850 100644
+--- a/mtab.c
++++ b/mtab.c
+@@ -235,3 +235,30 @@ lock_mtab (void) {
+ 	return 0;
+ }
+ 
++/*
++ * Call fflush and fsync on the mtab, and then endmntent. If either fflush
++ * or fsync fails, then truncate the file back to "size". endmntent is called
++ * unconditionally, and the errno (if any) from fflush and fsync are returned.
++ */
++int
++my_endmntent(FILE *stream, off_t size)
++{
++	int rc, fd;
++
++	fd = fileno(stream);
++	if (fd < 0)
++		return -EBADF;
++
++	rc = fflush(stream);
++	if (!rc)
++		rc = fsync(fd);
++
++	/* truncate file back to "size" -- best effort here */
++	if (rc) {
++		rc = errno;
++		ftruncate(fd, size);
++	}
++
++	endmntent(stream);
++	return rc;
++}
+-- 
+1.7.1
+

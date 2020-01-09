@@ -1,0 +1,49 @@
+From 7e87f7b6c7fa40ff3850ae42a080a8da90b087f0 Mon Sep 17 00:00:00 2001
+From: Jeff Layton <jlayton@samba.org>
+Date: Tue, 19 Jul 2011 08:17:40 -0400
+Subject: [PATCH] mount.cifs: reacquire CAP_DAC_READ_SEARCH before calling mount(2)
+
+It's possible that the user is trying to mount onto a directory to which
+he doesn't have execute perms. If that's the case then the mount will
+currently fail. Fix this by reenabling CAP_DAC_READ_SEARCH before
+calling mount(2). That will ensure that the kernel's permissions check
+for this is bypassed.
+
+Reported-by: Erik Logtenberg <erik@logtenberg.eu>
+Signed-off-by: Jeff Layton <jlayton@samba.org>
+Reviewed-by: Steve French <sfrench@us.ibm.com>
+---
+ mount.cifs.c |   10 ++++++++--
+ 1 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/mount.cifs.c b/mount.cifs.c
+index c2b6e47..601f956 100644
+--- a/mount.cifs.c
++++ b/mount.cifs.c
+@@ -1901,8 +1901,13 @@ mount_retry:
+ 	else
+ 		fstype = cifs_fstype;
+ 
+-	if (!parsed_info->fakemnt
+-	    && mount(dev_name, ".", fstype, parsed_info->flags, options)) {
++	if (!parsed_info->fakemnt) {
++		toggle_dac_capability(0, 1);
++		rc = mount(dev_name, ".", fstype, parsed_info->flags, options);
++		toggle_dac_capability(0, 0);
++		if (rc == 0)
++			goto do_mtab;
++
+ 		switch (errno) {
+ 		case ECONNREFUSED:
+ 		case EHOSTUNREACH:
+@@ -1937,6 +1942,7 @@ mount_retry:
+ 		goto mount_exit;
+ 	}
+ 
++do_mtab:
+ 	if (!parsed_info->nomtab)
+ 		rc = add_mtab(orig_dev, mountpoint, parsed_info->flags, fstype);
+ 
+-- 
+1.7.1
+
