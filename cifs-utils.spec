@@ -3,7 +3,7 @@
 
 Name:            cifs-utils
 Version:         6.2
-Release:         10%{pre_release}%{?dist}
+Release:         4%{pre_release}%{?dist}
 Summary:         Utilities for mounting and managing CIFS mounts
 
 Group:           System Environment/Daemons
@@ -23,20 +23,7 @@ Patch2:          0002-getcifsacl-remove-some-dead-code.patch
 Patch3:          0003-asn1-remove-some-usused-functions.patch
 Patch4:          0004-data_blob-clean-out-unused-functions.patch
 Patch5:          0005-mount.cifs-fix-bad-free-of-string-returned-by-dirnam.patch
-Patch6:          0001-asn1-fix-use-after-free-in-asn1_write.patch
-Patch7:          0001-cifs-use-krb5_kt_default-to-determine-default-keytab.patch
-Patch8:          0001-autoconf-fix-link-of-libwbclient.patch
-Patch9:          0002-mount.cifs-on-2nd-try-mount.cifs-must-also-uppercase.patch
-Patch10:         0003-mtab.c-include-paths.h-for-_PATH_MOUNTED.patch
-Patch11:         0004-manpage-clarify-use-of-backupuid-and-backupgid-in-mo.patch
-Patch12:         0005-mount.cifs-ignore-x-mount-options.patch
-Patch13:         0001-autoconf-Use-DEFS-when-building-idmapwb.so.patch
-Patch14:         0007-aclocal-fix-typo-in-idmap.m4.patch
-Patch15:         0008-mount.cifs-Removed-extra-comma-in-front-of-domain.patch
-Patch16:         0009-mount.cifs-Accept-empty-domains-on-the-command-line.patch
-Patch17:         0010-mount.cifs-Fixed-command-line-parsing-and-aligned-wi.patch
-Patch18:         0011-mount.cifs-Remove-unneeded-stdbool-header-include.patch
-Patch19:         0012-manpage-document-mfsymlinks-in-the-mount.cifs-man-pa.patch
+Patch6:		 0001-asn1-fix-use-after-free-in-asn1_write.patch
 
 %description
 The SMB/CIFS protocol is a standard file sharing protocol widely deployed
@@ -63,19 +50,6 @@ necessary for building ID mapping plugins for cifs-utils.
 %patch4 -p1
 %patch5 -p1
 %patch6 -p1
-%patch7 -p1
-%patch8 -p1
-%patch9 -p1
-%patch10 -p1
-%patch11 -p1
-%patch12 -p1
-%patch13 -p1
-%patch14 -p1
-%patch15 -p1
-%patch16 -p1
-%patch17 -p1
-%patch18 -p1
-%patch19 -p1
 
 %build
 %configure --prefix=/usr ROOTSBINDIR=%{_sbindir}
@@ -125,33 +99,6 @@ fi
 %{_includedir}/cifsidmap.h
 
 %changelog
-* Mon Apr 03 2017 Sachin Prabhu <sprabhu@redhat.com> - 6.2-10
-- aclocal: fix typo in idmap.m4
-- mount.cifs: Removed extra comma in front of domain
-- mount.cifs: Accept empty domains on the command line
-- mount.cifs: Fixed command line parsing and aligned with kernel
-- mount.cifs: Remove unneeded stdbool header include
-- manpage: document mfsymlinks in the mount.cifs man page
-
-* Thu Jun 30 2016 Sachin Prabhu <sprabhu@redhat.com> - 6.2-9
-- Use $(DEFS) when building idmapwb.so
-
-* Thu Jun 30 2016 Sachin Prabhu <sprabhu@redhat.com> - 6.2-8
-- Prevent unnecessary linking of libwbclient
-- Uppercase orig_dev on 2nd try at mounting
-- Include paths.h in mtab.c
-- Clarify use of backupuid/backupgid in manpage
-- Ignore x-* mount options
-
-* Fri Aug 29 2014 Sachin Prabhu <sprabhu@redhat.com> - 6.2-7
--  use krb5_kt_default() to determine default keytab location (bz#1083795)
-
-* Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 6.2-6
-- Mass rebuild 2014-01-24
-
-* Fri Dec 27 2013 Daniel Mach <dmach@redhat.com> - 6.2-5
-- Mass rebuild 2013-12-27
-
 * Mon Oct 14 2013 Jeff Layton <jlayton@redhat.com> 6.2-4
 - fix use-after-free in asn1_write
 
